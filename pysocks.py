@@ -22,8 +22,10 @@ import socket
 import struct
 from typing import Optional
 
+LOG_LEVEL = logging.CRITICAL  # Change to logging.INFO or logging.DEBUG for output
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOG_LEVEL,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger(__name__)

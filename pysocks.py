@@ -404,10 +404,11 @@ async def _cmd_udp_associate(reader: asyncio.StreamReader,
 
     # Bind on the same IP the TCP server accepted on
     server_ip = writer.get_extra_info("sockname")[0]
+    sock_family = socket.AF_INET6 if ":" in server_ip else socket.AF_INET
     transport, _ = await loop.create_datagram_endpoint(
         lambda: relay,
         local_addr=(server_ip, 0),   # port 0 → OS picks ephemeral port
-        family=socket.AF_INET,
+        family=sock_family,
         allow_broadcast=True,
     )
 
@@ -430,11 +431,12 @@ async def _drain_until_close(reader: asyncio.StreamReader) -> None:
     """
     try:
         while True:
-            data = await asyncio.wait_for(reader.read(256), timeout=30)
+            # SOCKS5 TCP control connection must remain alive indefinitely 
+            # while the UDP relay is active. Block until EOF or error.
+            data = await reader.read(256)
             if not data:
                 break
-    except (asyncio.TimeoutError, ConnectionResetError,
-            BrokenPipeError, OSError):
+    except (ConnectionResetError, BrokenPipeError, OSError):
         pass
 
 

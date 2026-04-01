@@ -121,6 +121,9 @@ def parse_udp_header(data: bytes) -> Optional[tuple]:
     """
     if len(data) < 4:
         return None
+    # RSV (2 bytes) must be 0x0000 per RFC 1928
+    if data[0:2] != b"\x00\x00":
+        return None
     frag = data[2]
     atyp = data[3]
     offset = 4
@@ -190,6 +193,12 @@ class UDPRelay(asyncio.DatagramProtocol):
         log.info("UDP relay bound on %s:%s", host, port)
 
     def datagram_received(self, data: bytes, addr: tuple) -> None:
+        # Debug: log raw incoming datagram and source address
+        try:
+            log.debug("UDP relay recv from %r (%d B): %s", addr, len(data), data.hex())
+        except Exception:
+            log.debug("UDP relay recv from %r (%d B)", addr, len(data))
+
         if self.client_addr is None:
             # First packet — learn client address
             self.client_addr = addr
@@ -211,7 +220,8 @@ class UDPRelay(asyncio.DatagramProtocol):
     async def _from_client(self, data: bytes) -> None:
         parsed = parse_udp_header(data)
         if parsed is None:
-            log.warning("UDP relay: malformed header from client, dropping")
+            # Log raw payload for debugging header parsing issues
+            log.warning("UDP relay: malformed header from client, dropping; raw=%s", data.hex())
             return
         frag, dst_host, dst_port, payload = parsed
         if frag != 0:
@@ -220,10 +230,22 @@ class UDPRelay(asyncio.DatagramProtocol):
             return
         try:
             # Offload OS resolver to a thread-pool worker so the event loop
-            # stays unblocked while DNS is in flight.  No external deps —
-            # still uses /etc/hosts, /etc/resolv.conf, nsswitch, etc.
+            # stays unblocked while DNS is in flight.
+            # Ensure we resolve addresses suitable for the relay socket
+            # family (e.g., avoid returning IPv6 when relay is IPv4-only).
+            sock_family = socket.AF_UNSPEC
+            if self.transport is not None:
+                sock = self.transport.get_extra_info("socket")
+                if sock is not None and hasattr(sock, "family"):
+                    sock_family = sock.family
+
             infos = await self.loop.run_in_executor(
-                None, socket.getaddrinfo, dst_host, dst_port, 0, socket.SOCK_DGRAM
+                None,
+                socket.getaddrinfo,
+                dst_host,
+                dst_port,
+                sock_family,
+                socket.SOCK_DGRAM,
             )
             if not infos:
                 return
@@ -237,6 +259,12 @@ class UDPRelay(asyncio.DatagramProtocol):
     def _from_target(self, data: bytes, addr: tuple) -> None:
         if self.client_addr is None:
             return
+        # Debug: log target reply details
+        try:
+            log.debug("UDP reply from target %r (%d B): %s", addr, len(data), data.hex())
+        except Exception:
+            log.debug("UDP reply from target %r (%d B)", addr, len(data))
+
         src_host, src_port = addr[0], addr[1]
         wrapped = build_udp_header(src_host, src_port) + data
         self.transport.sendto(wrapped, self.client_addr)
